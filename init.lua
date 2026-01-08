@@ -14,8 +14,6 @@ vim.g.have_nerd_font = false
 
 -- Make line numbers default
 vim.o.number = true
--- You can also add relative line numbers, to help with jumping.
---  Experiment for yourself to see if you like it!
 vim.o.relativenumber = true
 
 -- Enable mouse mode, can be useful for resizing splits for example!
@@ -24,14 +22,7 @@ vim.o.mouse = 'a'
 -- Don't show the mode, since it's already in the status line
 vim.o.showmode = false
 
--- Sync clipboard between OS and Neovim.
---  Schedule the setting after `UiEnter` because it can increase startup-time.
---  Remove this option if you want your OS clipboard to remain independent.
---  See `:help 'clipboard'`
--- vim.schedule(function()
---   vim.o.clipboard = 'unnamedplus'
--- end)
-
+vim.o.wrap = false
 -- Enable break indent
 vim.o.breakindent = true
 
@@ -44,6 +35,9 @@ vim.o.smartcase = true
 
 -- Keep signcolumn on by default
 vim.o.signcolumn = 'yes'
+
+-- Highlight column 80
+vim.opt.colorcolumn = "80"
 
 -- Decrease update time
 vim.o.updatetime = 250
@@ -125,19 +119,11 @@ vim.keymap.set('n', '<Leader>w/', '<cmd>vsplit<CR>', { silent = true, noremap = 
 vim.keymap.set('n', '<Leader>w-', '<cmd>split<CR>', { silent = true, noremap = true })
 vim.keymap.set('n', '<Leader>fs', '<cmd>write<CR>', { silent = true, noremap = true })
 vim.keymap.set('n', '<Leader>bb', '<cmd>CtrlPBuffer<CR>', { silent = true, noremap = true })
-vim.keymap.set("n", "<Leader>,c", function()
-  vim.cmd([[s/^/-- /]])
-  vim.cmd([[noh]])
-end, { desc = "Comment line with -- and clear search highlight", silent = true })
-vim.keymap.set("n", "<Leader>,c", function()
-  vim.cmd([[s/^-- //]])
-  vim.cmd([[noh]])
-end, { desc = "Uncomment line and clear search highlight", silent = true })
-vim.keymap.set('n', '<Leader>,u', ':s/^-- //<CR>:noh<CR>', { silent = true, noremap = true })
 vim.keymap.set('n', '<Leader>ts', '<cmd>tselect<CR>', { silent = true, noremap = true })
 vim.keymap.set('n', '<Leader>tt', '<cmd>Neotree toggle<CR>', { silent = true, noremap = true })
 vim.keymap.set('n', '<Leader>tf', '<cmd>Neotree reveal<CR>', { silent = true, noremap = true })
 vim.keymap.set('n', '<Leader><Tab>', ':buffer #<CR>', { silent = true, noremap = true, desc = 'Switch to alternate buffer' })
+vim.keymap.set('n', '<Leader>gb', '<cmd>Gitsigns blame<CR>', { silent = true, noremap = true })
 
 -- [[ Basic Autocommands ]]
 --  See `:help lua-guide-autocommands`
@@ -185,6 +171,9 @@ require('lazy').setup({
   'PhilRunninger/nerdtree-visual-selection',
   'kien/ctrlp.vim',
   'ervandew/supertab',
+  'feuerbach/vim-hs-module-name',
+  'junegunn/vim-easy-align',
+  'numToStr/comment.nvim',
 
   -- NOTE: Plugins can also be added by using a table,
   -- with the first argument being the link and the following
@@ -218,6 +207,7 @@ require('lazy').setup({
         topdelete = { text = '‾' },
         changedelete = { text = '~' },
       },
+      current_line_blame = true,
     },
   },
 
@@ -434,6 +424,7 @@ require('lazy').setup({
           hl.LineNrBelow = { fg = '#b5a281' }
           hl.Visual = { fg = '#000000', bg = '#0b94d9' }
           hl.TabLine = { fg = '#0b94d9' }
+          hl.Whitespace = { bg = '#6a6a75' }
         end,
       }
 
@@ -552,6 +543,116 @@ require('lazy').setup({
       lazy = '💤 ',
     },
   },
+})
+
+-- [[ Quickfix to diagnostics ]]
+-- Configure errorformat to capture warning/error type
+vim.o.errorformat = '%f:%l:%c: %tarning: %m,%f:%l:%c: %trror: %m,' .. vim.o.errorformat
+
+-- Create namespace for quickfix diagnostics
+local qf_ns = vim.api.nvim_create_namespace('quickfix_diagnostics')
+
+-- Configure diagnostic display for quickfix namespace
+vim.diagnostic.config({
+  underline = true,
+  virtual_text = false,
+  signs = true,
+  update_in_insert = false,
+}, qf_ns)
+
+-- Helper function to create diagnostic entry from quickfix item
+local function create_diagnostic_from_qf_item(item)
+  local severity = vim.diagnostic.severity.ERROR
+
+  -- Determine severity based on type field
+  if item.type == 'W' or item.type == 'w' then
+    severity = vim.diagnostic.severity.WARN
+  end
+
+  -- Handle column range - if no end_col, highlight to end of line
+  local col_start = (item.col or 1) - 1
+  local col_end = nil
+  local end_lnum = nil
+
+  if item.end_col and item.end_col > 0 and item.end_lnum then
+    col_end = item.end_col
+    end_lnum = item.end_lnum - 1
+  end
+
+  return {
+    lnum = item.lnum - 1,
+    col = col_start,
+    end_lnum = end_lnum,
+    end_col = col_end,
+    severity = severity,
+    message = item.text or '',
+    source = 'quickfix',
+  }
+end
+
+-- Function to convert quickfix entries to diagnostics
+local function quickfix_to_diagnostics()
+  -- Clear all quickfix diagnostics from all buffers
+  vim.diagnostic.reset(qf_ns)
+
+  local qf_list = vim.fn.getqflist()
+  local diagnostics_by_buf = {}
+
+  for _, item in ipairs(qf_list) do
+    if item.bufnr > 0 and item.lnum > 0 then
+      if not diagnostics_by_buf[item.bufnr] then
+        diagnostics_by_buf[item.bufnr] = {}
+      end
+      table.insert(diagnostics_by_buf[item.bufnr], create_diagnostic_from_qf_item(item))
+    end
+  end
+
+  -- Set diagnostics for each buffer
+  for bufnr, diagnostics in pairs(diagnostics_by_buf) do
+    vim.diagnostic.set(qf_ns, bufnr, diagnostics, {})
+  end
+end
+
+-- Function to apply diagnostics for a specific buffer
+local function apply_quickfix_diagnostics_for_buffer(bufnr)
+  local qf_list = vim.fn.getqflist()
+  local diagnostics = {}
+
+  for _, item in ipairs(qf_list) do
+    if item.bufnr == bufnr and item.lnum > 0 then
+      table.insert(diagnostics, create_diagnostic_from_qf_item(item))
+    end
+  end
+
+  vim.diagnostic.set(qf_ns, bufnr, diagnostics, {})
+end
+
+-- Auto-convert quickfix entries to diagnostics when loading from file
+vim.api.nvim_create_autocmd('QuickFixCmdPost', {
+  pattern = '[cg]file,[cg]getfile',
+  callback = function()
+    quickfix_to_diagnostics()
+  end,
+})
+
+-- Reapply diagnostics when a buffer is read (handles newly opened buffers)
+vim.api.nvim_create_autocmd('BufReadPost', {
+  pattern = '*',
+  callback = function(args)
+    local qf_list = vim.fn.getqflist()
+    if #qf_list == 0 then
+      return
+    end
+
+    -- Only apply diagnostics for this specific buffer if it has quickfix entries
+    local bufnr = args.buf
+    for _, item in ipairs(qf_list) do
+      if item.bufnr == bufnr then
+        apply_quickfix_diagnostics_for_buffer(bufnr)
+        return
+      end
+    end
+  end,
 })
 
 -- OCaml
